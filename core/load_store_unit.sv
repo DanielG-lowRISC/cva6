@@ -29,7 +29,10 @@ module load_store_unit
     parameter type fu_data_t = logic,
     parameter type fetch_areq_t = logic,
     parameter type fetch_arsp_t = logic,
-    parameter type lsu_ctrl_t = logic
+    parameter type lsu_ctrl_t = logic,
+    parameter type x_mem_req_t = logic,
+    parameter type x_mem_resp_t = logic,
+    parameter type x_mem_result_t = logic
 ) (
     // Subsystem Clock - SUBSYSTEM
     input logic clk_i,
@@ -177,11 +180,52 @@ module load_store_unit
     output logic      [CVA6Cfg.XLEN-1:0] sdtrig_load_data_o,
     input  logic      [CVA6Cfg.XLEN-1:0] sdtrig_load_data_action_i,
     input  logic                         sdtrig_store_stall_i,
-    input  logic      [CVA6Cfg.XLEN-1:0] sdtrig_store_action_i
+    input  logic      [CVA6Cfg.XLEN-1:0] sdtrig_store_action_i,
+
+    // CV-X-IF memory (request/response) interface - SUBSYSTEM
+    input  logic          x_mem_valid_i,
+    output logic          x_mem_ready_o,
+    input  x_mem_req_t    x_mem_req_i,
+    output x_mem_resp_t   x_mem_resp_o,
+    // CV-X-IF memory result interface - SUBSYSTEM
+    output logic          x_mem_result_valid_o,
+    output x_mem_result_t x_mem_result_o,
+    // Exception of the last X-IF memory transaction, kept by the CVXIF FU
+    // until the result of the instruction comes back - EX_STAGE
+    output logic          x_mem_ex_valid_o,
+    output exception_t    x_mem_ex_o,
+    // An X-IF instruction has done its last memory transaction - ISSUE_STAGE
+    output logic          x_mem_done_o
 );
 
   // data is misaligned
   logic                             data_misaligned;
+
+  // ------------------------------
+  // Request source: issue or X-IF
+  // ------------------------------
+  // The LSU executes the requests of the issue stage and the memory requests
+  // of a CV-X-IF coprocessor. Both go through the same path from here on.
+  fu_data_t                         lsu_fu_data;
+  logic                             lsu_valid;
+  logic      [                31:0] lsu_tinst;
+  // An X-IF memory request enters the LSU this cycle
+  logic                             x_inject;
+  fu_data_t                         x_fu_data;
+  // Commit of the oldest speculative store: from the commit stage or for an
+  // X-IF store
+  logic                             x_st_commit;
+  logic                             st_commit;
+  // Outputs of the load/store pipeline registers, before the X-IF demux
+  logic                             load_valid_q;
+  logic                             store_valid_q;
+  logic                             x_ld_match;
+  logic                             x_st_match;
+
+  assign lsu_fu_data = x_inject ? x_fu_data : fu_data_i;
+  assign lsu_valid   = lsu_valid_i || x_inject;
+  assign lsu_tinst   = x_inject ? '0 : tinst_i;
+  assign st_commit   = commit_i || x_st_commit;
   // --------------------------------------
   // 1st register stage - (stall registers)
   // --------------------------------------
@@ -202,7 +246,7 @@ module load_store_unit
   logic                             g_overflow;
   logic      [(CVA6Cfg.XLEN/8)-1:0] be_i;
 
-  assign vaddr_xlen = $unsigned($signed(fu_data_i.imm) + $signed(fu_data_i.operand_a));
+  assign vaddr_xlen = $unsigned($signed(lsu_fu_data.imm) + $signed(lsu_fu_data.operand_a));
   assign vaddr_i = vaddr_xlen[CVA6Cfg.VLEN-1:0];
   // we work with SV39 or SV32, so if VM is enabled, check that all bits [XLEN-1:38] or [XLEN-1:31] are equal
   assign overflow = (CVA6Cfg.IS_XLEN64 && (!((&vaddr_xlen[CVA6Cfg.XLEN-1:CVA6Cfg.SV-1]) == 1'b1 || (|vaddr_xlen[CVA6Cfg.XLEN-1:CVA6Cfg.SV-1]) == 1'b0)));
@@ -450,7 +494,7 @@ module load_store_unit
       .valid_i   (st_valid_i),
       .lsu_ctrl_i(lsu_ctrl),
       .pop_st_o  (pop_st),
-      .commit_i,
+      .commit_i  (st_commit),
       .commit_ready_o,
       .amo_valid_commit_i,
       .mbe_i     (mbe_i),
@@ -544,8 +588,11 @@ module load_store_unit
       .clk_i,
       .rst_ni,
       .d_i({ld_valid, ld_trans_id, ld_result, ld_ex}),
-      .d_o({load_valid_o, load_trans_id_o, load_result_o, load_exception})
+      .d_o({load_valid_q, load_trans_id_o, load_result_o, load_exception})
   );
+  // The result of an X-IF load goes back to the coprocessor, not to the
+  // scoreboard.
+  assign load_valid_o = load_valid_q && !x_ld_match;
 
   // Load data trigger: the result is compared as it leaves the output
   // register, with the load it belongs to, so the break and the load retire
@@ -570,8 +617,9 @@ module load_store_unit
       .clk_i,
       .rst_ni,
       .d_i({st_valid, st_trans_id, st_result, st_ex}),
-      .d_o({store_valid_o, store_trans_id_o, store_result_o, store_exception_o})
+      .d_o({store_valid_q, store_trans_id_o, store_result_o, store_exception_o})
   );
+  assign store_valid_o = store_valid_q && !x_st_match;
 
   // determine whether this is a load or store
   always_comb begin : which_op
@@ -648,9 +696,9 @@ module load_store_unit
   // and we can always generate the byte enable from the address at hand
 
   if (CVA6Cfg.IS_XLEN64) begin : gen_8b_be
-    assign be_i = be_gen(vaddr_i[2:0], extract_transfer_size(fu_data_i.operation));
+    assign be_i = be_gen(vaddr_i[2:0], extract_transfer_size(lsu_fu_data.operation));
   end else begin : gen_4b_be
-    assign be_i = be_gen_32(vaddr_i[1:0], extract_transfer_size(fu_data_i.operation));
+    assign be_i = be_gen_32(vaddr_i[1:0], extract_transfer_size(lsu_fu_data.operation));
   end
 
   // ------------------------
@@ -797,18 +845,18 @@ module load_store_unit
   lsu_ctrl_t lsu_req_i;
 
   assign lsu_req_i = {
-    lsu_valid_i,
+    lsu_valid,
     vaddr_i,
-    tinst_i,
+    lsu_tinst,
     hs_ld_st_inst,
     hlvx_inst,
     overflow,
     g_overflow,
-    fu_data_i.operand_b,
+    lsu_fu_data.operand_b,
     be_i,
-    fu_data_i.fu,
-    fu_data_i.operation,
-    fu_data_i.trans_id
+    lsu_fu_data.fu,
+    lsu_fu_data.operation,
+    lsu_fu_data.trans_id
   };
 
   lsu_bypass #(
@@ -819,13 +867,225 @@ module load_store_unit
       .rst_ni,
       .flush_i,
       .lsu_req_i      (lsu_req_i),
-      .lsu_req_valid_i(lsu_valid_i),
+      .lsu_req_valid_i(lsu_valid),
       .pop_ld_i       (pop_ld),
       .pop_st_i       (pop_st),
 
       .lsu_ctrl_o(lsu_ctrl),
       .ready_o   (lsu_ready_o)
   );
+
+  // ------------------------------
+  // CV-X-IF memory interface
+  // ------------------------------
+  // A memory request of the coprocessor is turned into a scalar load or store
+  // and goes through the LSU like one (translation, PMP, store buffer, load
+  // forwarding checks), tagged with the trans_id of its offloaded
+  // instruction: the X-IF id is the scoreboard trans_id. Its result is taken
+  // off the LSU output and returned on the X-IF instead of the scoreboard.
+  //
+  // Ordering, which makes this simple:
+  // - A request is served only when its instruction is the oldest in the
+  //   scoreboard, so it is not speculative and every older store is already
+  //   committed.
+  // - The issue stage issues no younger load or store while an instruction
+  //   accepted with loadstore = 1 has memory transactions to do.
+  // So the X-IF store is the only speculative store in the store buffer and
+  // the LSU commits it itself: the commit stage cannot, the instruction does
+  // not commit before its result, which comes after its stores.
+  //
+  // One transaction at a time: mem_ready is given only once the LSU is done
+  // with the request, so mem_resp can carry its exception.
+  //
+  // Not handled in this sketch:
+  // - be: the byte enables come from size and addr, a sparse be is not
+  //   supported.
+  // - mode: loads and stores use the effective privilege of the CSRs
+  //   (ld_st_priv_lvl_i), as scalar ones do.
+  // - dbg and err: no trigger match or bus error is reported.
+  // - Big endian (mbe_i).
+  localparam int unsigned XOffBits = $clog2(CVA6Cfg.XLEN / 8);
+
+  typedef enum logic [1:0] {
+    XIdle,      // waiting for a request of the oldest instruction
+    XWaitLsu,   // the request is in the LSU
+    XCommitSt,  // the store is in the store buffer, commit it
+    XResp       // mem_ready, mem_resp
+  } x_state_e;
+
+  x_state_e x_state_d, x_state_q;
+  logic [CVA6Cfg.X_HARTID_WIDTH-1:0] x_hartid_d, x_hartid_q;
+  logic [CVA6Cfg.TRANS_ID_BITS-1:0] x_id_d, x_id_q;
+  logic [XOffBits-1:0] x_off_d, x_off_q;
+  logic x_we_d, x_we_q;
+  logic x_last_d, x_last_q;
+  exception_t x_ex_d, x_ex_q;
+  logic [CVA6Cfg.XLEN-1:0] x_rdata_d, x_rdata_q;
+  logic x_result_valid_d, x_result_valid_q;
+  logic x_size_ok, x_at_head;
+
+  if (CVA6Cfg.CvxifEn) begin : gen_x_mem
+    // The request as a scalar load or store. The LSU wants the store data in
+    // the low bits, the X-IF has it on its byte lanes.
+    always_comb begin : x_mem_request
+      x_fu_data           = '0;
+      x_fu_data.fu        = x_mem_req_i.we ? STORE : LOAD;
+      x_fu_data.operand_a = x_mem_req_i.addr;
+      x_fu_data.operand_b = x_mem_req_i.wdata >> {x_mem_req_i.addr[XOffBits-1:0], 3'b000};
+      x_fu_data.imm       = '0;
+      x_fu_data.trans_id  = x_mem_req_i.id;
+      // Zero extending loads: the coprocessor gets the raw bytes.
+      unique case (x_mem_req_i.size)
+        3'd0: x_fu_data.operation = x_mem_req_i.we ? SB : LBU;
+        3'd1: x_fu_data.operation = x_mem_req_i.we ? SH : LHU;
+        3'd2: x_fu_data.operation = x_mem_req_i.we ? SW : (CVA6Cfg.IS_XLEN64 ? LWU : LW);
+        default: x_fu_data.operation = x_mem_req_i.we ? SD : LD;
+      endcase
+    end
+
+    // The LSU moves at most XLEN bits per access.
+    assign x_size_ok = x_mem_req_i.size <= 3'(XOffBits);
+    // The commit pointer is the trans_id of the oldest instruction.
+    assign x_at_head = x_mem_req_i.id == commit_tran_id_i && !commit_drop_i;
+
+    assign x_ld_match = x_state_q == XWaitLsu && !x_we_q && load_valid_q && load_trans_id_o == x_id_q;
+    assign x_st_match = x_state_q == XWaitLsu && x_we_q && store_valid_q && store_trans_id_o == x_id_q;
+
+    always_comb begin : x_mem_fsm
+      x_state_d        = x_state_q;
+      x_hartid_d       = x_hartid_q;
+      x_id_d           = x_id_q;
+      x_off_d          = x_off_q;
+      x_we_d           = x_we_q;
+      x_last_d         = x_last_q;
+      x_ex_d           = x_ex_q;
+      x_rdata_d        = x_rdata_q;
+      x_inject         = 1'b0;
+      x_st_commit      = 1'b0;
+      x_mem_ready_o    = 1'b0;
+      x_mem_ex_valid_o = 1'b0;
+      x_mem_done_o     = 1'b0;
+      x_result_valid_d = 1'b0;
+
+      unique case (x_state_q)
+        XIdle: begin
+          if (x_mem_valid_i && x_at_head) begin
+            x_hartid_d = x_mem_req_i.hartid;
+            x_id_d     = x_mem_req_i.id;
+            x_off_d    = x_mem_req_i.addr[XOffBits-1:0];
+            x_we_d     = x_mem_req_i.we;
+            x_last_d   = x_mem_req_i.last;
+            x_ex_d     = '0;
+            x_rdata_d  = '0;
+            if (!x_size_ok) begin
+              // Wider than the LSU: answered with an access fault.
+              x_ex_d.valid = 1'b1;
+              x_ex_d.cause = x_mem_req_i.we ? riscv::ST_ACCESS_FAULT : riscv::LD_ACCESS_FAULT;
+              x_ex_d.tval  = CVA6Cfg.TvalEn ? x_mem_req_i.addr : '0;
+              x_state_d    = XResp;
+            end else if (lsu_ready_o && !lsu_valid_i) begin
+              // The issue stage has priority on the LSU input.
+              x_inject  = 1'b1;
+              x_state_d = XWaitLsu;
+            end
+          end
+        end
+        XWaitLsu: begin
+          if (x_ld_match) begin
+            x_ex_d    = load_exception;
+            x_rdata_d = load_result_o << {x_off_q, 3'b000};
+            x_state_d = XResp;
+          end else if (x_st_match) begin
+            x_ex_d    = store_exception_o;
+            x_state_d = store_exception_o.valid ? XResp : XCommitSt;
+          end
+        end
+        XCommitSt: begin
+          // The store went into the store buffer at least a cycle ago.
+          if (commit_ready_o) begin
+            x_st_commit = 1'b1;
+            x_state_d   = XResp;
+          end
+        end
+        XResp: begin
+          x_mem_ready_o    = 1'b1;
+          // No memory result after a synchronous exception.
+          x_result_valid_d = !x_ex_q.valid;
+          x_mem_ex_valid_o = x_ex_q.valid;
+          // After an exception the coprocessor sends no more requests for
+          // the instruction.
+          x_mem_done_o     = x_last_q || x_ex_q.valid;
+          x_state_d        = XIdle;
+        end
+        default: x_state_d = XIdle;
+      endcase
+
+      if (flush_i) begin
+        x_state_d = XIdle;
+      end
+    end
+
+    always_ff @(posedge clk_i or negedge rst_ni) begin : x_mem_regs
+      if (!rst_ni) begin
+        x_state_q        <= XIdle;
+        x_hartid_q       <= '0;
+        x_id_q           <= '0;
+        x_off_q          <= '0;
+        x_we_q           <= 1'b0;
+        x_last_q         <= 1'b0;
+        x_ex_q           <= '0;
+        x_rdata_q        <= '0;
+        x_result_valid_q <= 1'b0;
+      end else begin
+        x_state_q        <= x_state_d;
+        x_hartid_q       <= x_hartid_d;
+        x_id_q           <= x_id_d;
+        x_off_q          <= x_off_d;
+        x_we_q           <= x_we_d;
+        x_last_q         <= x_last_d;
+        x_ex_q           <= x_ex_d;
+        x_rdata_q        <= x_rdata_d;
+        x_result_valid_q <= x_result_valid_d;
+      end
+    end
+
+    assign x_mem_resp_o.exc       = x_ex_q.valid;
+    assign x_mem_resp_o.exccode   = x_ex_q.cause[5:0];
+    assign x_mem_resp_o.dbg       = 1'b0;
+    assign x_mem_ex_o             = x_ex_q;
+
+    // The memory result follows mem_ready by a cycle. x_*_q still hold the
+    // transaction then: a new request is latched at the earliest in that cycle.
+    assign x_mem_result_valid_o   = x_result_valid_q;
+    assign x_mem_result_o.hartid  = x_hartid_q;
+    assign x_mem_result_o.id      = x_id_q;
+    assign x_mem_result_o.rdata   = x_rdata_q;
+    assign x_mem_result_o.err     = 1'b0;
+    assign x_mem_result_o.dbg     = 1'b0;
+
+    //pragma translate_off
+    x_mem_valid_held :
+    assert property (@(posedge clk_i) disable iff (~rst_ni || flush_i)
+        x_state_q != XIdle |-> x_mem_valid_i)
+    else $error("[load_store_unit] X-IF mem_valid dropped before mem_ready");
+    x_st_commit_alone :
+    assert property (@(posedge clk_i) disable iff (~rst_ni) !(x_st_commit && commit_i))
+    else $error("[load_store_unit] the commit stage committed a store under an X-IF store");
+    //pragma translate_on
+  end else begin : gen_no_x_mem
+    assign x_fu_data            = '0;
+    assign x_inject             = 1'b0;
+    assign x_st_commit          = 1'b0;
+    assign x_ld_match           = 1'b0;
+    assign x_st_match           = 1'b0;
+    assign x_mem_ready_o        = 1'b0;
+    assign x_mem_resp_o         = '0;
+    assign x_mem_result_valid_o = 1'b0;
+    assign x_mem_result_o       = '0;
+    assign x_mem_ex_valid_o     = 1'b0;
+    assign x_mem_ex_o           = '0;
+    assign x_mem_done_o         = 1'b0;
+  end
 
   assign rvfi_lsu_ctrl_o  = lsu_ctrl;
   // Probe only: the translated address of the access currently presented to

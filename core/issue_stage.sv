@@ -127,6 +127,8 @@ module issue_stage
     output x_commit_t x_commit_o,
     // CVXIF Transaction rejected -> instruction is illegal - EX_STAGE
     output logic x_transaction_rejected_o,
+    // An X-IF instruction has done its last memory transaction - EX_STAGE
+    input logic x_mem_done_i,
     // Transaction ID - EX_STAGE
     input logic [CVA6Cfg.NrWbPorts-1:0][CVA6Cfg.TRANS_ID_BITS-1:0] trans_id_i,
     // Result from branch unit - EX_STAGE
@@ -190,6 +192,42 @@ module issue_stage
 
   logic x_transaction_accepted_iro_sb, x_issue_writeback_iro_sb;
   logic [CVA6Cfg.TRANS_ID_BITS-1:0] x_id_iro_sb;
+
+  // ---------------------------------------------------------
+  // CV-X-IF instructions with memory transactions to do
+  // ---------------------------------------------------------
+  // The LSU serves X-IF memory requests in program order with scalar loads
+  // and stores only if no younger load or store is issued meanwhile: count
+  // the instructions accepted with loadstore = 1 whose last memory
+  // transaction is not done, and hold loads and stores while there are some.
+  logic [CVA6Cfg.TRANS_ID_BITS:0] x_ls_pending_q;
+  logic x_ls_accepted, x_ls_block;
+
+  if (CVA6Cfg.CvxifEn) begin : gen_x_ls_pending
+    assign x_ls_accepted = x_transaction_accepted_iro_sb && x_issue_resp_i.loadstore;
+
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+      if (!rst_ni) begin
+        x_ls_pending_q <= '0;
+      end else if (flush_i) begin
+        x_ls_pending_q <= '0;
+      end else begin
+        x_ls_pending_q <= x_ls_pending_q + x_ls_accepted - x_mem_done_i;
+      end
+    end
+    assign x_ls_block = x_ls_pending_q != '0;
+
+    //pragma translate_off
+    x_ls_pending_no_underflow :
+    assert property (@(posedge clk_i) disable iff (!rst_ni || flush_i)
+        x_mem_done_i |-> (x_ls_pending_q != '0))
+    else $error("[issue_stage] X-IF memory transaction done for no loadstore instruction");
+    //pragma translate_on
+  end else begin : gen_no_x_ls_pending
+    assign x_ls_pending_q = '0;
+    assign x_ls_accepted  = 1'b0;
+    assign x_ls_block     = 1'b0;
+  end
 
   // ---------------------------------------------------------
   // 2. Manage instructions in a scoreboard
@@ -298,6 +336,7 @@ module issue_stage
       .x_commit_o              (x_commit_o),
       .x_transaction_accepted_o(x_transaction_accepted_iro_sb),
       .x_transaction_rejected_o(x_transaction_rejected_o),
+      .x_ls_block_i            (x_ls_block),
       .x_issue_writeback_o     (x_issue_writeback_iro_sb),
       .x_id_o                  (x_id_iro_sb),
       .waddr_i,

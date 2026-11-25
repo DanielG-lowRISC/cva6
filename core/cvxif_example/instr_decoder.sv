@@ -54,6 +54,8 @@ module instr_decoder #(
     issue_resp_o.accept        = '0;
     issue_resp_o.writeback     = '0;
     issue_resp_o.register_read = '0;
+    // The example coprocessor does no memory transaction.
+    issue_resp_o.loadstore     = '0;
     registers_o                = '0;
     opcode_o                   = opcode_t'(0);  // == ILLEGAL see cvxif_instr_pkg.sv
     hartid_o                   = '0;

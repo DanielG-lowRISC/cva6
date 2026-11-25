@@ -117,6 +117,8 @@ module issue_read_operands
     // Writeback Handling of CVXIF
     output logic x_transaction_accepted_o,
     output logic x_transaction_rejected_o,
+    // X-IF instructions have memory transactions to do: no load or store
+    input logic x_ls_block_i,
     output logic x_issue_writeback_o,
     output logic [CVA6Cfg.TRANS_ID_BITS-1:0] x_id_o,
     // Destination register in the register file - COMMIT_STAGE
@@ -361,6 +363,13 @@ module issue_read_operands
       fus_busy[0].store = 1'b1;
     end
 
+    // A younger load or store would get ahead of the memory transactions of
+    // an X-IF instruction in the LSU.
+    if (CVA6Cfg.CvxifEn && x_ls_block_i) begin
+      fus_busy[0].load  = 1'b1;
+      fus_busy[0].store = 1'b1;
+    end
+
     if (CVA6Cfg.SuperscalarEn) begin
 
       if (fpu_early_valid_i) begin
@@ -426,7 +435,12 @@ module issue_read_operands
             fus_busy[1].fpu_vec = 1'b1;
           end
         end
-        CVXIF: ;
+        CVXIF: begin
+          // Whether the coprocessor does memory transactions for it is only
+          // known from the issue response.
+          fus_busy[1].load  = 1'b1;
+          fus_busy[1].store = 1'b1;
+        end
         default: ;
       endcase
     end

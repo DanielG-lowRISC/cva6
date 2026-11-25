@@ -465,6 +465,7 @@ package config_pkg;
     int unsigned X_ID_WIDTH;
     int unsigned X_RFR_WIDTH;
     int unsigned X_RFW_WIDTH;
+    int unsigned X_MEM_WIDTH;
     int unsigned X_NUM_HARTS;
     int unsigned X_HARTID_WIDTH;
     int unsigned X_DUALREAD;

@@ -63,6 +63,9 @@ module cvxif_example_coprocessor
   assign cvxif_resp_o.issue_ready      = issue_ready;
   assign cvxif_resp_o.issue_resp       = issue_resp;
   assign cvxif_resp_o.register_ready   = cvxif_resp_o.issue_ready;
+  // No memory transaction
+  assign cvxif_resp_o.mem_valid        = 1'b0;
+  assign cvxif_resp_o.mem_req          = '0;
 
   assign compressed_req                = cvxif_req_i.compressed_req;
   assign compressed_valid              = cvxif_req_i.compressed_valid;
@@ -145,6 +148,10 @@ module cvxif_example_coprocessor
     cvxif_resp_o.result.data   = result;
     cvxif_resp_o.result.rd     = rd;
     cvxif_resp_o.result.we     = we;
+    cvxif_resp_o.result.exc    = 1'b0;
+    cvxif_resp_o.result.exccode = '0;
+    cvxif_resp_o.result.dbg    = 1'b0;
+    cvxif_resp_o.result.err    = 1'b0;
   end
 
 

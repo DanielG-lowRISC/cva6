@@ -33,7 +33,10 @@ module ex_stage
     parameter type fetch_areq_t = logic,
     parameter type fetch_arsp_t = logic,
     parameter type lsu_ctrl_t = logic,
-    parameter type x_result_t = logic
+    parameter type x_result_t = logic,
+    parameter type x_mem_req_t = logic,
+    parameter type x_mem_resp_t = logic,
+    parameter type x_mem_result_t = logic
 ) (
     // Subsystem Clock - SUBSYSTEM
     input logic clk_i,
@@ -173,6 +176,16 @@ module ex_stage
     output logic x_result_ready_o,
     // CVXIF Issue transaction rejected -> illegal instruction - ISSUE_STAGE
     input logic x_transaction_rejected_i,
+    // CVXIF Memory (request/response) interface - SUBSYSTEM
+    input logic x_mem_valid_i,
+    output logic x_mem_ready_o,
+    input x_mem_req_t x_mem_req_i,
+    output x_mem_resp_t x_mem_resp_o,
+    // CVXIF Memory result interface - SUBSYSTEM
+    output logic x_mem_result_valid_o,
+    output x_mem_result_t x_mem_result_o,
+    // An X-IF instruction has done its last memory transaction - ISSUE_STAGE
+    output logic x_mem_done_o,
     //Trigger module communication
     output logic [CVA6Cfg.VLEN-1:0] sdtrig_lsu_inputs_operand_a_o,
     output logic [CVA6Cfg.XLEN-1:0] sdtrig_lsu_inputs_operand_c_o,
@@ -533,6 +546,9 @@ module ex_stage
   // ----------------
   fu_data_t lsu_data;
   logic [31:0] lsu_tinst;
+  // Exception of an X-IF memory transaction, for the CVXIF FU
+  logic x_mem_ex_valid;
+  exception_t x_mem_ex;
   always_comb begin
     lsu_data  = lsu_valid_i[0] ? fu_data_i[0] : '0;
     lsu_tinst = tinst_i[0];
@@ -559,7 +575,10 @@ module ex_stage
       .fu_data_t        (fu_data_t),
       .fetch_areq_t     (fetch_areq_t),
       .fetch_arsp_t     (fetch_arsp_t),
-      .lsu_ctrl_t       (lsu_ctrl_t)
+      .lsu_ctrl_t       (lsu_ctrl_t),
+      .x_mem_req_t      (x_mem_req_t),
+      .x_mem_resp_t     (x_mem_resp_t),
+      .x_mem_result_t   (x_mem_result_t)
   ) lsu_i (
       .clk_i,
       .rst_ni,
@@ -636,7 +655,17 @@ module ex_stage
       .sdtrig_load_data_o,
       .sdtrig_load_data_action_i,
       .sdtrig_store_stall_i   (sdtrig_store_stall_i),
-      .sdtrig_store_action_i  (sdtrig_store_action_i)
+      .sdtrig_store_action_i  (sdtrig_store_action_i),
+      // CV-X-IF memory interface
+      .x_mem_valid_i,
+      .x_mem_ready_o,
+      .x_mem_req_i,
+      .x_mem_resp_o,
+      .x_mem_result_valid_o,
+      .x_mem_result_o,
+      .x_mem_ex_valid_o       (x_mem_ex_valid),
+      .x_mem_ex_o             (x_mem_ex),
+      .x_mem_done_o
   );
 
   //Sdtrig: the address and the value an access carries, tapped before the LSU
@@ -675,6 +704,8 @@ module ex_stage
         .x_trans_id_i(cvxif_data.trans_id),
         .x_illegal_i(x_transaction_rejected_i),
         .x_off_instr_i,
+        .x_mem_ex_valid_i(x_mem_ex_valid),
+        .x_mem_ex_i(x_mem_ex),
         .x_ready_o,
         .x_trans_id_o,
         .x_exception_o,

@@ -210,6 +210,9 @@ package build_config_pkg;
     cfg.X_ID_WIDTH = cfg.TRANS_ID_BITS;
     cfg.X_RFR_WIDTH = cfg.XLEN;
     cfg.X_RFW_WIDTH = cfg.XLEN;
+    // The LSU datapath is XLEN wide, so one X-IF memory transaction moves at
+    // most XLEN bits.
+    cfg.X_MEM_WIDTH = cfg.XLEN;
     cfg.X_NUM_HARTS = 1;
     cfg.X_HARTID_WIDTH = cfg.XLEN;
     cfg.X_DUALREAD = 0;

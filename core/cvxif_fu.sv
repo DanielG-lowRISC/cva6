@@ -30,6 +30,9 @@ module cvxif_fu
     input  logic                                   x_illegal_i,
     // Offloaded instruction - ISSUE_STAGE
     input  logic       [                     31:0] x_off_instr_i,
+    // Exception of an X-IF memory transaction, given with mem_ready - LSU
+    input  logic                                   x_mem_ex_valid_i,
+    input  exception_t                             x_mem_ex_i,
     // CVXIF is ready - ISSUE_STAGE
     output logic                                   x_ready_o,
     // CVXIF result transaction ID - ISSUE_STAGE
@@ -59,8 +62,21 @@ module cvxif_fu
   assign x_valid_o = x_illegal_i || result_valid_i;
   assign x_result_o = result_i.data;
   assign x_trans_id_o = x_illegal_i ? x_trans_id_i : result_i.id;
-  assign x_we_o = result_i.we;
+  assign x_we_o = result_i.we && !result_i.exc;
   assign x_rd_o = result_i.rd;
+
+  // A memory transaction that raised an exception is the last one of its
+  // instruction, and that instruction is the oldest: it traps once its result
+  // comes back. The exception waits here for that result, which only says
+  // exc, while the LSU knows the cause and the faulting address.
+  exception_t x_mem_ex_q;
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      x_mem_ex_q <= '0;
+    end else if (x_mem_ex_valid_i) begin
+      x_mem_ex_q <= x_mem_ex_i;
+    end
+  end
 
   // Handling of illegal instruction exception
   always_comb begin
@@ -75,6 +91,11 @@ module cvxif_fu
     //  guest virtual address whatever the virtualization mode is.
     x_exception_o.gva = 1'b0;
     x_exception_o.timing = '0;
+    // Exception of a memory transaction of the instruction
+    if (!x_illegal_i && result_valid_i && result_i.exc) begin
+      x_exception_o       = x_mem_ex_q;
+      x_exception_o.valid = 1'b1;
+    end
   end
 
 endmodule

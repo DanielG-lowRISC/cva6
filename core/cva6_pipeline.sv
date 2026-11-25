@@ -327,6 +327,18 @@ module cva6_pipeline
   logic                                           x_register_ready;
   logic                                           x_result_valid;
   x_result_t                                      x_result;
+  // CVXIF memory interfaces
+  localparam type x_mem_req_t = `X_MEM_REQ_T(CVA6Cfg);
+  localparam type x_mem_resp_t = `X_MEM_RESP_T(CVA6Cfg);
+  localparam type x_mem_result_t = `X_MEM_RESULT_T(CVA6Cfg);
+  logic                                           x_mem_valid;
+  x_mem_req_t                                     x_mem_req;
+  logic                                           x_mem_ready;
+  x_mem_resp_t                                    x_mem_resp;
+  logic                                           x_mem_result_valid;
+  x_mem_result_t                                  x_mem_result;
+  // An X-IF instruction has done its last memory transaction
+  logic                                           x_mem_done_ex_id;
 
   // --------------
   // PCGEN <-> CSR
@@ -716,6 +728,8 @@ CVA6Cfg.NrCommitPorts
     x_register_ready   = cvxif_resp_i.register_ready;
     x_result_valid     = cvxif_resp_i.result_valid;
     x_result           = cvxif_resp_i.result;
+    x_mem_valid        = CVA6Cfg.CvxifEn && cvxif_resp_i.mem_valid;
+    x_mem_req          = cvxif_resp_i.mem_req;
   end
   if (CVA6Cfg.CvxifEn) begin
     always_comb begin : gen_cvxif_output_assignment
@@ -727,6 +741,10 @@ CVA6Cfg.NrCommitPorts
       cvxif_req.register         = x_register;
       cvxif_req.commit_valid     = x_commit_valid;
       cvxif_req.commit           = x_commit;
+      cvxif_req.mem_ready        = x_mem_ready;
+      cvxif_req.mem_resp         = x_mem_resp;
+      cvxif_req.mem_result_valid = x_mem_result_valid;
+      cvxif_req.mem_result       = x_mem_result;
       cvxif_req.result_ready     = x_result_ready;
     end
     assign trans_id_ex_id[X_WB] = x_trans_id_ex_id;
@@ -819,6 +837,7 @@ CVA6Cfg.NrCommitPorts
       .x_commit_valid_o        (x_commit_valid),
       .x_commit_o              (x_commit),
       .x_transaction_rejected_o(x_transaction_rejected),
+      .x_mem_done_i            (x_mem_done_ex_id),
       // Commit
       .trans_id_i              (trans_id_ex_id),
       .resolved_branch_i       (resolved_branch),
@@ -874,7 +893,10 @@ CVA6Cfg.NrCommitPorts
       .fetch_areq_t       (fetch_areq_t),
       .fetch_arsp_t       (fetch_arsp_t),
       .lsu_ctrl_t         (lsu_ctrl_t),
-      .x_result_t         (x_result_t)
+      .x_result_t         (x_result_t),
+      .x_mem_req_t        (x_mem_req_t),
+      .x_mem_resp_t       (x_mem_resp_t),
+      .x_mem_result_t     (x_mem_result_t)
   ) ex_stage_i (
       .clk_i(clk_i),
       .rst_ni(rst_ni),
@@ -960,6 +982,13 @@ CVA6Cfg.NrCommitPorts
       .x_result_valid_i        (x_result_valid),
       .x_result_i              (x_result),
       .x_result_ready_o        (x_result_ready),
+      .x_mem_valid_i           (x_mem_valid),
+      .x_mem_ready_o           (x_mem_ready),
+      .x_mem_req_i             (x_mem_req),
+      .x_mem_resp_o            (x_mem_resp),
+      .x_mem_result_valid_o    (x_mem_result_valid),
+      .x_mem_result_o          (x_mem_result),
+      .x_mem_done_o            (x_mem_done_ex_id),
       // Performance counters
       .itlb_miss_o             (itlb_miss_ex_perf),
       .dtlb_miss_o             (dtlb_miss_ex_perf),
